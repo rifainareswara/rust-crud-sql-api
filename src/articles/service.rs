@@ -1,64 +1,150 @@
-use warp::{Filter, Reply};
-use warp::filters::BoxedFilter;
+use chrono::Utc;
+use sqlx::{postgres::PgPool, query_as_unchecked, query_unchecked};
+use warp::Rejection;
 
-use crate::{auth, environment};
-use crate::auth::models::Role;
-use crate::environment::Environment;
-use crate::articles::handlers;
+use crate::articles::models::{Article, Comment};
 
-pub fn routes(_env: Environment) -> BoxedFilter<(impl Reply, )> {
-    let get_home_article_headers_route = warp::get().and(warp::path!("api" / "articles_home")
-        .and(environment::with_env(_env.clone()))
-        .and_then(handlers::get_home_article_headers_handler));
+pub async fn get_article_by_id(_id: uuid::Uuid, connection: &PgPool) -> Result<Option<Article>, Rejection> {
+    println!("[get_article_by_id] _id: {}", _id);
+    let result = query_as_unchecked!(
+        Article,
+        r#"SELECT id, title, url, content, created_at, updated_at, in_home FROM articles WHERE id=$1"#,
+        &_id
+    )
+        .fetch_one(connection)
+        .await
+        .map_err(|_e| { anyhow::Error::new(_e) })
+        .ok();
+    Ok(result)
+}
 
-    let get_article_headers_route = warp::get().and(warp::path!("api" / "articles")
-        .and(environment::with_env(_env.clone()))
-        .and_then(handlers::get_article_headers_handler));
+pub async fn get_article_by_url(_url: String, connection: &PgPool) -> Result<Option<Article>, Rejection> {
+    println!("[get_article_by_url] _url: {}", _url);
+    let result = query_as_unchecked!(
+        Article,
+        r#"SELECT id, title, url, content, created_at, updated_at, in_home FROM articles WHERE url=$1"#,
+        _url
+    )
+        .fetch_one(connection)
+        .await
+        .map_err(|_e| { anyhow::Error::new(_e) })
+        .ok();
+    Ok(result)
+}
 
-    let get_article_route = warp::get().and(warp::path!("api" / "articles" / String)
-        .and(environment::with_env(_env.clone()))
-        .and_then(handlers::get_article_by_url_handler));
+pub async fn get_home_article_headers(connection: &PgPool) -> Result<Option<Vec<Article>>, Rejection> {
+    let result = query_as_unchecked!(
+        Article,
+        r#"SELECT id, title, url, '' as content, created_at, updated_at, in_home FROM articles WHERE in_home=true"#
+    )
+        .fetch_all(connection)
+        .await
+        .map_err(|_e| { anyhow::Error::new(_e) })
+        .ok();
+    Ok(result)
+}
 
-    let create_article_route = warp::post().and(warp::path!("api" / "articles")
-        .and(warp::body::json())
-        .and(environment::with_env(_env.clone()))
-        .and(auth::middleware::with_auth(Role::Admin))
-        .and_then(handlers::create_article_handler));
 
-    let update_article_route = warp::put().and(warp::path!("api" / "articles")
-        .and(warp::body::json())
-        .and(environment::with_env(_env.clone()))
-        .and(auth::middleware::with_auth(Role::Admin))
-        .and_then(handlers::update_article_handler));
+pub async fn get_article_headers(connection: &PgPool) -> Result<Option<Vec<Article>>, Rejection> {
+    let result = query_as_unchecked!(
+        Article,
+        r#"SELECT id, title, url, '' as content, created_at, updated_at, in_home FROM articles"#
+    )
+        .fetch_all(connection)
+        .await
+        .map_err(|_e| { anyhow::Error::new(_e) })
+        .ok();
+    Ok(result)
+}
 
-    let delete_article_route = warp::delete().and(warp::path!("api" / "articles" / String)
-        .and(environment::with_env(_env.clone()))
-        .and(auth::middleware::with_auth(Role::Admin))
-        .and_then(handlers::delete_article_handler));
+pub async fn create_article(_article: &Article, connection: &PgPool) -> Result<Option<u64>, Rejection> {
+    let _result = query_unchecked!(
+        r#"INSERT INTO articles (id, title, url, content, created_at, in_home) VALUES ($1, $2, $3, $4, $5, $6)"#,
+        _article.id,
+        _article.title,
+        _article.url,
+        _article.content,
+        Utc::now(),
+        _article.in_home
+    )
+        .execute(connection)
+        .await
+        .unwrap();
 
-    let update_home_view_route = warp::get().and(warp::path!("api" / "articles" / "updateHomeView" / String)
-        .and(environment::with_env(_env.clone()))
-        .and(auth::middleware::with_auth(Role::Admin))
-        .and_then(handlers::update_home_view_handler));
+    Ok(Some(0))
+}
 
-    let get_comments_route = warp::get().and(warp::path!("api" / "articles" / "comments" / String)
-        .and(environment::with_env(_env.clone()))
-        .and_then(handlers::get_article_comments_handler));
+pub async fn update_article(_article: &Article, connection: &PgPool) -> Result<Option<u64>, Rejection> {
+    query_unchecked!(
+        r#"UPDATE articles SET title=$1, url=$2, content=$3, updated_at=$4, in_home=$5 WHERE id=$6"#,
+        _article.title,
+        _article.url,
+        _article.content,
+        _article.updated_at,
+        _article.in_home,
+        _article.id
+    )
+        .execute(connection)
+        .await
+        .unwrap();
+    Ok(Some(0))
+}
 
-    let post_comment_route = warp::post().and(warp::path!("api" / "articles" / "comments")
-        .and(warp::body::json())
-        .and(environment::with_env(_env.clone()))
-        .and_then(handlers::post_comment_handler));
+pub async fn delete_article(_id: &str, connection: &PgPool) -> Result<Option<u64>, Rejection> {
+    query_as_unchecked!(
+        Article,
+        r#"DELETE FROM articles WHERE id=$1"#,
+        uuid::Uuid::parse_str(&_id).unwrap()
+    )
+        .execute(connection)
+        .await
+        .unwrap();
+    Ok(Some(0))
+}
 
-    let routes = get_home_article_headers_route
-        .or(get_article_headers_route)
-        .or(get_article_route)
-        .or(create_article_route)
-        .or(update_article_route)
-        .or(delete_article_route)
-        .or(update_home_view_route)
-        .or(get_comments_route)
-        .or(post_comment_route);
+pub async fn update_home_view(_id: String, connection: &PgPool) -> Result<Option<u64>, Rejection> {
+    let uuid = uuid::Uuid::parse_str(&_id).unwrap();
+    query_unchecked!(
+        r#"UPDATE articles SET in_home=(SELECT NOT in_home FROM articles WHERE id=$1) WHERE id=$2"#,
+        uuid,
+        uuid
+    )
+        .execute(connection)
+        .await
+        .unwrap();
+    Ok(Some(0))
+}
 
-    routes.boxed()
+
+
+pub async fn get_comments(_id: String, connection: &PgPool) -> Result<Option<Vec<Comment>>, Rejection> {
+    let result = query_as_unchecked!(
+        Comment,
+        r#"SELECT id, author, email, content, article_id, created_at, updated_at FROM comments WHERE article_id=$1"#,
+        uuid::Uuid::parse_str(&_id).unwrap()
+    )
+        .fetch_all(connection)
+        .await
+        .map_err(|_e| { anyhow::Error::new(_e) })
+        .ok();
+    Ok(result)
+}
+
+pub async fn create_comment(_comment: &Comment, connection: &PgPool) -> Result<Option<u64>, Rejection> {
+    let timestamp = Utc::now();
+    let _result = query_unchecked!(
+        r#"INSERT INTO comments (id, author, email, content, article_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
+        _comment.id,
+        _comment.author,
+        _comment.email,
+        _comment.content,
+        _comment.article_id,
+        timestamp,
+        timestamp
+    )
+        .execute(connection)
+        .await
+        .unwrap();
+
+    Ok(Some(0))
 }
